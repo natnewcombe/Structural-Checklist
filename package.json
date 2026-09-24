@@ -1,0 +1,16 @@
+{
+  "name": "austruss-checklist-apps",
+  "private": true,
+  "type": "module",
+  "description": "Single-file HTML tablet apps for Austruss production bays",
+  "scripts": {
+    "test": "node test/parsers.mjs && node test/ui.mjs",
+    "test:parsers": "node test/parsers.mjs",
+    "test:ui": "node test/ui.mjs"
+  },
+  "devDependencies": {
+    "jsdom": "^24.0.0",
+    "pdf-lib": "1.17.1",
+    "pdfjs-dist": "3.11.174"
+  }
+}
