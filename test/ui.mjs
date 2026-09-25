@@ -190,6 +190,81 @@ check('job progress across both files',
   w.eval("(function(){var p=jobProgress();return [p.items,p.itemsDone,p.pieces,p.piecesDone];})()"),
   [4, 2, 9, 3]);
 
+/* ------------------------------------------------ versions: which to count */
+console.log('\nversions: which drawing to count against');
+const APP_EMAIL = 'app@austruss.com.au', DES = 'designer@austruss.com.au';
+const V = (id, day, who) => ({ id, createdAt: '2026-09-' + day + 'T00:00:00Z', createdBy: { email: who, name: who } });
+const pick = (versions, note) => JSON.parse(w.eval('JSON.stringify((function(){' +
+  'var p = pickWorkingVersion(' + JSON.stringify(versions) + ',' + JSON.stringify(APP_EMAIL) + ',' + JSON.stringify(note) + ');' +
+  'return { base: p.base && p.base.id, newer: p.newer && p.newer.id, revised: p.revisedSinceSave }; })())'));
+check('never saved: counts on the latest drawing',
+  pick([V(1,'01',DES), V(2,'02',DES)], null), { base: 2, newer: null, revised: false });
+check('after a save: back to the clean drawing, not the markup',
+  pick([V(1,'01',DES), V(2,'02',APP_EMAIL)], { sourceId: '1' }), { base: 1, newer: null, revised: false });
+check('designer revision after a save is offered and badged',
+  pick([V(1,'01',DES), V(2,'02',APP_EMAIL), V(3,'03',DES)], { sourceId: '1' }), { base: 1, newer: 3, revised: true });
+check('a declined revision is not offered again',
+  pick([V(1,'01',DES), V(2,'02',APP_EMAIL), V(3,'03',DES), V(4,'04',APP_EMAIL)], { sourceId: '1', skipId: '3' }), { base: 1, newer: null, revised: false });
+check('a revision switched to becomes the base',
+  pick([V(1,'01',DES), V(2,'02',APP_EMAIL), V(3,'03',DES), V(4,'04',APP_EMAIL)], { sourceId: '3' }), { base: 3, newer: null, revised: false });
+check('markup note unreadable: newest clean version before the last save',
+  pick([V(1,'01',DES), V(2,'02',APP_EMAIL)], null), { base: 1, newer: null, revised: false });
+check('markup keywords round-trip',
+  w.eval("JSON.stringify(parseMarkupKeywords(markupKeywords({sourceId:'1',skipId:'3'}).join(' ')))"), '{"sourceId":"1","skipId":"3"}');
+check('an ordinary PDF has no markup note', w.eval("parseMarkupKeywords('')"), null);
+
+/* ------------------------------------------ versions: open and save wiring */
+console.log('\nversions: open and save');
+const calls = [];
+function route(url, opts){
+  url = String(url);
+  calls.push({ url, method: (opts && opts.method) || 'GET' });
+  const json = body => ({ ok: true, json: async () => body, text: async () => JSON.stringify(body) });
+  if(url.includes('/api/users/me')) return json({ email: APP_EMAIL });
+  if(url.includes('/versions')) return json({ data: [V(70,'01',DES), V(77,'02',APP_EMAIL)] });
+  if(url.includes('/rows/') && url.includes('/attachments')) return json({ data: [
+    { id: 77, name: 'CUT LENGTHS.pdf', attachmentType: 'FILE', createdAt: '2026-09-02T00:00:00Z' }] });
+  if(url.includes('/download')) return { ok: true, arrayBuffer: async () => new ArrayBuffer(8) };
+  return json({});
+}
+w.fetch = async (url, opts) => route(url, opts);
+// The newest app save says it was drawn from version 70.
+w.pdfjsLib.getDocument = () => ({ promise: Promise.resolve(Object.assign(fakePdf(1), {
+  getMetadata: async () => ({ info: { Keywords: 'austruss-ssc-markup ssc-source:70' } })
+})) });
+await w.eval("loadWorkingBytes({ id: 77, name: 'CUT LENGTHS.pdf', kind: 'cutlist' })");
+const downloads = calls.filter(c => c.url.includes('/download')).map(c => new URL(c.url).searchParams.get('attachmentId'));
+check('opening reads the markup, then downloads the clean version it names', downloads, ['77', '70']);
+check('remembers which clean version the file is counted on',
+  w.eval("JSON.stringify(AppState.fileSource['CUT LENGTHS.pdf'])"), '{"sourceId":70,"skipId":null}');
+
+// Safety net: no version history (or no createdBy), and the latest version is
+// one of our markups. Its note still leads back to the clean drawing.
+calls.length = 0;
+w.fetch = async (url, opts) => { if(String(url).includes('/versions')) throw new Error('offline'); return route(url, opts); };
+w.eval("AppState.fileSource = {}");
+await w.eval("loadWorkingBytes({ id: 77, name: 'CUT LENGTHS.pdf', kind: 'cutlist' })");
+check('without version history, a markup still leads back to its clean source',
+  calls.filter(c => c.url.includes('/download')).map(c => new URL(c.url).searchParams.get('attachmentId')), ['77', '70']);
+w.fetch = async (url, opts) => route(url, opts);
+w.eval("AppState.fileSource['CUT LENGTHS.pdf'] = { sourceId: 70, skipId: null }");
+
+calls.length = 0;
+w.eval(`
+  annotateCutListPdf = async () => new Uint8Array([1]);
+  annotateDrawingsPdf = async () => new Uint8Array([1]);
+  PDFLib.PDFDocument = { load: async () => ({ setKeywords(k){ window.__keywords = k; }, save: async () => new Uint8Array([2]) }) };
+  AppState.fileBytes = { 'CUT LENGTHS.pdf': new ArrayBuffer(8) };
+`);
+await w.eval("saveProgress(document.createElement('button'))");
+const uploads = calls.filter(c => c.url.includes('/upload'));
+const up = uploads[0] ? new URL(uploads[0].url).searchParams : new URLSearchParams();
+check('one upload, for the file that has counts and bytes', uploads.length, 1);
+check('uploaded as a new version of the original, same name',
+  [up.get('mode'), up.get('attachmentId'), up.get('filename')], ['version', '77', 'CUT LENGTHS.pdf']);
+check('no IN PROGRESS copy is created', calls.some(c => decodeURIComponent(c.url).includes('IN PROGRESS')), false);
+check('markup is keyworded with its clean source', w.eval('JSON.stringify(window.__keywords)'), '["austruss-ssc-markup","ssc-source:70"]');
+
 console.log('\nruntime errors: ' + (runtimeErrors.length ? runtimeErrors.join('; ') : 'none'));
 console.log(failures + ' failure(s).');
 process.exit(failures || runtimeErrors.length ? 1 : 0);

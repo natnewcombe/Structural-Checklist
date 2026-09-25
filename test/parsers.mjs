@@ -56,7 +56,8 @@ function loadParsers(){
   };
   const fn = new Function(...Object.keys(ctx), code + `
     return { CONFIG, loadPdf, extractCutList, buildDrawingIndex,
-             annotateCutListPdf, annotateDrawingsPdf, classifyAttachments, extractTags };`);
+             annotateCutListPdf, annotateDrawingsPdf, classifyAttachments, extractTags,
+             markupKeywords, parseMarkupKeywords };`);
   return fn(...Object.values(ctx));
 }
 
@@ -168,6 +169,27 @@ for(const f of files){
   }catch(e){
     fail('threw: ' + e.message);
   }
+}
+
+// Save Progress versions the original attachment, and the next open finds its
+// way back to the clean drawing through PDF keywords. Check that note survives
+// a real pdf-lib write and pdf.js read on a real marked-up sample.
+{
+  const f = files.find(n => !api.CONFIG.CUTLIST_NAME_RE.test(n) && api.classifyAttachments([{ name: n }]).length);
+  console.log('\n=== markup note round-trip  [' + f + ']');
+  try{
+    const src = bytes(path.join(SAMPLES, f));
+    const pages = await api.buildDrawingIndex(await api.loadPdf(src.slice()));
+    const marked = await api.annotateDrawingsPdf(src.slice(), pages, { [pages[0].key]: 1 });
+    const doc = await PDFLib.PDFDocument.load(marked);
+    doc.setKeywords(api.markupKeywords({ sourceId: '123456', skipId: '789' }));
+    const meta = await (await api.loadPdf(await doc.save())).getMetadata();
+    const note = api.parseMarkupKeywords(meta.info && meta.info.Keywords);
+    console.log('  read back: ' + JSON.stringify(note));
+    if(!note || note.sourceId !== '123456' || note.skipId !== '789') fail('markup note did not survive pdf-lib -> pdf.js');
+    const plain = await (await api.loadPdf(src.slice())).getMetadata();
+    if(api.parseMarkupKeywords(plain.info && plain.info.Keywords)) fail('an untouched drawing reads as a markup');
+  }catch(e){ fail('markup round-trip threw: ' + e.message); }
 }
 
 console.log('\n' + files.length + ' file(s) checked, ' + failures + ' problem(s).');

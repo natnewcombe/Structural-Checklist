@@ -140,11 +140,29 @@ counter in the panel over the sheet.
 Counts are stored per work order row and **per attachment name**, so a new
 version of a file keeps its progress.
 
-Save Progress uploads `IN PROGRESS: <original name>.pdf` for every opened file
-with at least one count, always as a **new version of the same attachment**,
-never a fresh duplicate. Start Job snapshots the counts; the next Save Progress
-logs the delta to `ss_session_log` and clears the session. Start Job on its own
-writes nothing.
+Save Progress uploads the marked-up copy of every opened file with at least
+one count as a **new version of the original attachment**, same name, never a
+fresh duplicate. (It used to upload a separate `IN PROGRESS: <name>.pdf`; those
+older uploads stay hidden.) Start Job snapshots the counts; the next Save
+Progress logs the delta to `ss_session_log` and clears the session. Start Job on
+its own writes nothing.
+
+**Never count against the app's own markup.** Parsing it reads the stamps back
+as text, and the next save stacks new marks on old ones. So opening a file
+always goes back to a clean drawing version:
+
+- App saves always come from the Worker token's Smartsheet account
+  (`/users/me`); designers upload revisions from their own logins. That's how
+  `pickWorkingVersion` tells the two apart in the version history
+  (`/sheets/{id}/attachments/{id}/versions`, via the Worker's `/api`
+  passthrough, so the Worker needs no extra route).
+- Each markup carries PDF keywords: `austruss-ssc-markup ssc-source:<id>
+  [ssc-skip:<id>]`, naming the clean version it was drawn from and any newer
+  revision the team chose not to switch to. `cleanOf` follows that note as a
+  safety net whenever the history can't be trusted.
+- A designer version newer than the last save gets a NEW REVISION badge in the
+  file list, and opening the file asks: keep counting on the version you
+  started, or switch. Counts are keyed by mark, so they carry over either way.
 
 ## Known gaps
 
@@ -156,6 +174,9 @@ writes nothing.
   login), but it's a real limitation if upload history ever needs to name a
   person.
 - Smartsheet's API caps uploads at 30MB.
+- If whoever owns the Worker's Smartsheet token also uploads drawings from that
+  same login, the app will take those uploads for its own saves and skip them
+  as working versions. Designers must upload from their own accounts.
 
 ## Testing
 

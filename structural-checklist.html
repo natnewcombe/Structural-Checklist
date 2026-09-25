@@ -779,8 +779,8 @@
             attached to a job, and lets you count off marks as they're
             fabricated. Cut length sheets open as a tappable list; every other
             PDF opens as drawings with a counter on each page. Saving progress
-            uploads a marked-up "IN PROGRESS" copy of each file you touched
-            back to the job's row.
+            uploads a marked-up copy of each file you touched as a new version
+            of that file on the job's row.
           </p>
         </div>
         <div class="card">
@@ -1075,6 +1075,14 @@ async function getRowAttachments(sheetId, rowId){
   return (data.data || []).filter(a => a.attachmentType === 'FILE');
 }
 
+// Every version of one attachment, each with its own id, createdAt and
+// createdBy. Any version's id works here. Goes through the Worker's plain
+// /api passthrough, so the Worker needs no route of its own for it.
+async function getAttachmentVersions(sheetId, attachmentId){
+  const data = await ssGet('/sheets/' + sheetId + '/attachments/' + attachmentId + '/versions?includeAll=true');
+  return data.data || [];
+}
+
 // Re-resolve the live attachment ID immediately before writing: a version
 // bump changes it, so an ID fetched earlier must never be reused.
 async function resolveLiveAttachment(sheetId, rowId, name){
@@ -1096,6 +1104,52 @@ function classifyAttachments(attachments){
       id: a.id, name: a.name, createdAt: a.createdAt,
       kind: CONFIG.CUTLIST_NAME_RE.test(a.name) ? 'cutlist' : 'drawings'
     }));
+}
+
+// ---- Versions ---------------------------------------------------------------
+// Save Progress uploads the marked-up copy as a new version of the original
+// attachment. The app must then never count against its own markup: parsing
+// it would read the stamps back as text, and the next save would stack new
+// marks on old ones. So the app always works from a clean drawing version.
+//
+// App saves always come from the Worker's Smartsheet account; designers upload
+// revisions from their own logins. That's how the two are told apart. Each
+// markup also carries PDF keywords naming the clean version it was drawn from
+// (and any newer revision the team chose not to switch to).
+const MARKUP_TAG = 'austruss-ssc-markup';
+function markupKeywords(note){
+  note = note || {};
+  return [MARKUP_TAG]
+    .concat(note.sourceId ? ['ssc-source:' + note.sourceId] : [])
+    .concat(note.skipId ? ['ssc-skip:' + note.skipId] : []);
+}
+function parseMarkupKeywords(keywords){
+  const s = String(keywords || '');
+  if(s.indexOf(MARKUP_TAG) === -1) return null;
+  const src = s.match(/ssc-source:(\d+)/), skip = s.match(/ssc-skip:(\d+)/);
+  return { sourceId: src ? src[1] : null, skipId: skip ? skip[1] : null };
+}
+
+// versions: [{id, createdAt, createdBy:{email,name}}] in any order.
+// note: parsed keywords from the newest app save, or null.
+// Returns the clean version to count against (base), the newest designer
+// revision uploaded after it that hasn't been declined (newer), and whether
+// the latest version is a designer upload made since the last save.
+function pickWorkingVersion(versions, appEmail, note){
+  const byNewest = versions.slice().sort((a,b) => (b.createdAt||'').localeCompare(a.createdAt||''));
+  const email = (appEmail || '').toLowerCase();
+  const isApp = v => !!email && ((v.createdBy && v.createdBy.email) || '').toLowerCase() === email;
+  const clean = byNewest.filter(v => !isApp(v));
+  const lastApp = byNewest.find(isApp) || null;
+  const byId = id => id ? clean.find(v => String(v.id) === String(id)) || null : null;
+  note = note || {};
+  let base = byId(note.sourceId);
+  // No save yet, or its note is missing: the last save must have been drawn
+  // from the newest clean version uploaded before it.
+  if(!base) base = (lastApp && clean.find(v => (v.createdAt||'') <= (lastApp.createdAt||''))) || clean[0] || byNewest[0] || null;
+  const floor = [base, byId(note.skipId)].filter(Boolean).map(v => v.createdAt || '').sort().pop() || '';
+  const newer = clean.find(v => (v.createdAt||'') > floor) || null;
+  return { base, newer, lastApp, revisedSinceSave: !!(lastApp && byNewest[0] && !isApp(byNewest[0])) };
 }
 
 /* =========================================================================
@@ -1473,8 +1527,20 @@ const AppState = {
   jobSearchTerm: '',
   sessionStartTime: null,
   sessionSnapshot: {},    // name -> { itemKey: n } at Start Job
-  issuesByKey: {}
+  issuesByKey: {},
+  fileSource: {},         // name -> { sourceId, skipId }: clean version counted against
+  appEmail: null          // the Worker's Smartsheet account, fetched once
 };
+
+// Whose name the Worker's token uploads under: every version by this account
+// is one of the app's own marked-up saves.
+async function getAppAccountEmail(){
+  if(AppState.appEmail == null){
+    const me = await ssGet('/users/me');
+    AppState.appEmail = me.email || '';
+  }
+  return AppState.appEmail;
+}
 
 /* =========================================================================
    COUNT HELPERS
@@ -1730,6 +1796,7 @@ async function openJob(job){
   AppState.files = [];
   AppState.fileBytes = {};
   AppState.fileParsed = {};
+  AppState.fileSource = {};
   AppState.counts = {};
   AppState.current = null;
   DV.setPdf(null); CV.setPdf(null);
@@ -1764,6 +1831,7 @@ async function openJob(job){
     const attachments = await getRowAttachments(job.sheetId, job.rowId);
     AppState.files = classifyAttachments(attachments);
     renderFileList();
+    checkForRevisions(job);
     getIssuesForJob(job.workOrderId).then(byKey => {
       AppState.issuesByKey = byKey;
       const active = document.querySelector('.screen.active');
@@ -1791,7 +1859,8 @@ function renderFileList(){
     row.innerHTML =
       '<div class="ficon">' + (f.kind === 'cutlist' ? '&#9776;' : '&#128196;') + '</div>' +
       '<div class="finfo">' +
-        '<div class="fname">' + escapeHtml(f.name.replace(/\.pdf$/i, '')) + '</div>' +
+        '<div class="fname">' + escapeHtml(f.name.replace(/\.pdf$/i, '')) +
+          (f.revised ? '<span class="frame-tag-chips"><span class="tag-chip tag-girder">NEW REVISION</span></span>' : '') + '</div>' +
         '<div class="fkind">' + (f.kind === 'cutlist' ? 'Cut length sheet \u00b7 tap to count off marks' : 'Drawings \u00b7 tap to count off each page') + '</div>' +
       '</div>' +
       '<div class="fprog"></div>';
@@ -1799,6 +1868,24 @@ function renderFileList(){
     list.appendChild(row);
   });
   updateFileBadges();
+}
+
+// Flags files a designer has uploaded a new version of since the last Save
+// Progress. Runs in the background after the list shows; a failure just means
+// no badge, and the choice is still offered when the file is opened.
+async function checkForRevisions(job){
+  let email;
+  try{ email = await getAppAccountEmail(); }catch(e){ return; }
+  let any = false;
+  for(const f of AppState.files){
+    try{
+      const versions = await getAttachmentVersions(job.sheetId, f.id);
+      if(AppState.currentJob !== job) return;
+      f.revised = pickWorkingVersion(versions, email, null).revisedSinceSave;
+      any = any || f.revised;
+    }catch(e){ /* no badge for this file */ }
+  }
+  if(any && AppState.currentJob === job) renderFileList();
 }
 
 function updateFileBadges(){
@@ -1820,6 +1907,81 @@ function updateFileBadges(){
 /* =========================================================================
    OPEN A FILE — download once, parse once, then show the right screen
    ========================================================================= */
+// The latest version may be one of our own marked-up saves, so go back to the
+// clean drawing it was drawn from (see pickWorkingVersion). If a designer has
+// uploaded a newer revision since, the operator chooses which to count on.
+async function loadWorkingBytes(f){
+  const job = AppState.currentJob;
+  let versions = [], email = '';
+  try{
+    [versions, email] = await Promise.all([getAttachmentVersions(job.sheetId, f.id), getAppAccountEmail()]);
+  }catch(e){
+    toast('Couldn’t read this file’s version history — showing the latest version', 'err');
+  }
+  let pick = versions.length && email ? pickWorkingVersion(versions, email, null) : null;
+  if(!pick || !pick.base){
+    const safe = await cleanOf(await downloadAttachmentBytes(job.sheetId, f.id), f.id);
+    AppState.fileSource[f.name] = safe.note;
+    return safe.bytes;
+  }
+  let note = null;
+  if(pick.lastApp){
+    try{
+      note = await readMarkupNote(await downloadAttachmentBytes(job.sheetId, pick.lastApp.id));
+      pick = pickWorkingVersion(versions, email, note);
+    }catch(e){ /* fall back to the newest clean version before the last save */ }
+  }
+  let skipId = note ? note.skipId : null;
+  if(pick.newer){
+    if(await askRevision(f, pick.base, pick.newer) === 'switch'){ pick.base = pick.newer; skipId = null; }
+    else skipId = pick.newer.id;
+  }
+  AppState.fileSource[f.name] = { sourceId: pick.base.id, skipId };
+  return (await cleanOf(await downloadAttachmentBytes(job.sheetId, pick.base.id), pick.base.id)).bytes;
+}
+
+// Safety net: if the version about to be counted against is itself one of our
+// markups (history unreadable, or a version missing its createdBy), follow its
+// note back to the clean drawing rather than parse our own stamps.
+async function cleanOf(bytes, id){
+  const note = await readMarkupNote(bytes.slice(0)).catch(() => null);
+  if(!note || !note.sourceId || String(note.sourceId) === String(id)) return { bytes, note: null };
+  return { bytes: await downloadAttachmentBytes(AppState.currentJob.sheetId, note.sourceId), note };
+}
+
+async function readMarkupNote(bytes){
+  const pdf = await loadPdf(bytes);
+  const meta = await pdf.getMetadata().catch(() => null);
+  return parseMarkupKeywords(meta && meta.info && meta.info.Keywords);
+}
+
+// Resolves 'keep' or 'switch'. Cancel counts as keep, so nothing changes
+// unless someone deliberately picks the new revision.
+function askRevision(f, base, newer){
+  return new Promise(resolve => {
+    const who = v => (v.createdBy && (v.createdBy.name || v.createdBy.email)) || 'unknown';
+    document.getElementById('modalTitle').textContent = 'New revision: ' + f.name.replace(/\.pdf$/i, '');
+    document.getElementById('modalSearchInput').style.display = 'none';
+    const listEl = document.getElementById('modalList');
+    listEl.className = '';
+    listEl.innerHTML = '<div class="fdate" style="margin-bottom:12px;">A newer version of this drawing has been uploaded. ' +
+      'Counts stay either way; if you switch, check them against the new drawing.</div>';
+    const cancelBtn = document.querySelector('#modalSheet > .btn.outline');
+    const onCancel = () => resolve('keep');   // its own onclick closes the modal
+    const choose = choice => { cancelBtn.removeEventListener('click', onCancel); closeModal(); resolve(choice); };
+    [['keep', 'Keep counting on the version you started', base],
+     ['switch', 'Switch to the new revision', newer]].forEach(([choice, label, v]) => {
+      const row = document.createElement('div');
+      row.className = 'pick-row';
+      row.innerHTML = '<div class="fname">' + escapeHtml(label) + '</div>' +
+        '<div class="fdate">Uploaded by ' + escapeHtml(who(v)) + ', ' + escapeHtml(formatDateTime(v.createdAt)) + '</div>';
+      row.addEventListener('click', () => choose(choice));
+      listEl.appendChild(row);
+    });
+    cancelBtn.addEventListener('click', onCancel, { once: true });
+    document.getElementById('modalOverlay').classList.add('show');
+  });
+}
 async function openFile(f){
   AppState.current = { name: f.name, kind: f.kind };
   setFileTab(f);
@@ -1839,7 +2001,7 @@ async function openFile(f){
 
   try{
     if(!AppState.fileBytes[f.name]){
-      AppState.fileBytes[f.name] = await downloadAttachmentBytes(AppState.currentJob.sheetId, f.id);
+      AppState.fileBytes[f.name] = await loadWorkingBytes(f);
     }
     const bytes = AppState.fileBytes[f.name];
 
@@ -2202,9 +2364,17 @@ function renderSessionList(sessions){
 
 /* =========================================================================
    SAVE PROGRESS — upload a marked-up copy of every touched file (as a new
-   version of the same IN PROGRESS attachment), then log the session.
+   version of the original attachment), then log the session.
    ========================================================================= */
-function inProgressName(name){ return 'IN PROGRESS: ' + name.replace(/\.pdf$/i, '') + '.pdf'; }
+// Save Progress used to upload a separate "IN PROGRESS: <name>.pdf"; those
+// older uploads are still hidden by IN_PROGRESS_ATTACHMENT_RE. Now the markup
+// is a new version of the original, keyworded with the clean version it was
+// drawn from so the next open can find its way back to it.
+async function tagMarkup(bytes, source){
+  const doc = await PDFLib.PDFDocument.load(bytes);
+  doc.setKeywords(markupKeywords(source));
+  return await doc.save();
+}
 
 async function saveProgress(btn){
   if(!AppState.currentJob) return;
@@ -2221,13 +2391,12 @@ async function saveProgress(btn){
         const annotated = parsed.kind === 'cutlist'
           ? await annotateCutListPdf(bytes.slice(0), parsed.rows, counts)
           : await annotateDrawingsPdf(bytes.slice(0), parsed.pages, counts);
-        const filename = inProgressName(f.name);
-        const existing = await resolveLiveAttachment(AppState.currentJob.sheetId, AppState.currentJob.rowId, filename);
-        if(existing){
-          await uploadAttachmentBytes(AppState.currentJob.sheetId, { attachmentId: existing.id, filename, mode: 'version' }, annotated);
-        } else {
-          await uploadAttachmentBytes(AppState.currentJob.sheetId, { rowId: AppState.currentJob.rowId, filename, mode: 'new' }, annotated);
-        }
+        // Always drawn from the clean drawing (fileBytes), never from an
+        // earlier markup, so each version shows only the current counts.
+        const tagged = await tagMarkup(annotated, AppState.fileSource[f.name]);
+        const live = await resolveLiveAttachment(AppState.currentJob.sheetId, AppState.currentJob.rowId, f.name);
+        if(!live) throw new Error('the original is no longer attached to this row');
+        await uploadAttachmentBytes(AppState.currentJob.sheetId, { attachmentId: live.id, filename: f.name, mode: 'version' }, tagged);
         uploaded.push(f.name);
       }catch(e){ failed.push(f.name + ': ' + e.message); }
     }
