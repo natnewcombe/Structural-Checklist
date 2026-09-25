@@ -59,8 +59,11 @@ These cost real debugging time. Treat them as settled.
   URL, Types of Items, Finishes, Total Weight (kg), No. of Structural
   Assemblies, No. of Fabrication Items, No. of Structural Drawings.
 - Attachments: everything except names starting with `Cover Page`, `Pack Label`
-  or `Mapping`, and the app's own `IN PROGRESS:` uploads. A name matching
-  `CUT[\s_-]*LENGTHS?` opens as a cut list; everything else opens as drawings.
+  or `Mapping`, names containing `Detailer - Report` (weight summaries the bay
+  doesn't check off from), and the app's own `IN PROGRESS:` uploads. A name
+  matching `CUT[\s_-]*LENGTHS?` or `JOB[\s_-]*INFO[\s_-]*FILE` (structural job
+  info files are cut length sheets) opens as a cut list; everything else opens
+  as drawings.
   The separator tolerance matters: Smartsheet displays `ZONE A3 - CUT LENGTHS`
   but a downloaded copy arrives as `ZONE_A3_-_CUT_LENGTHS.pdf`.
 
@@ -108,8 +111,21 @@ Uses pdf.js 3.11.174 (loaded from cdnjs) to read the text layer, and pdf-lib
   3. `strategyFramecadDetailer` — FRAMECAD Detailer welded LGS panels: the mark
      sits in the title-block column directly above the `DRAWING NAME` label,
      with the office phone number (`02 4860 1400`) as a fallback anchor.
+  4. `strategyTitleBlockBelow` — Austruss LGS title block, where the mark sits
+     directly **below** the `DRAWING NAME` label. Covers welded LGS panels and
+     girder pages without a `Quantity Required` line. Those girder pages say
+     `DOUBLE GIRDER — 2× GI1000`, but each page is one truss of the pair, so
+     quantity is 1 per page.
+  5. `strategyMarkAs` — FRAMECAD Structure beams and wall panels that say
+     `Mark as B101` with no `Quantity Required`; quantity 1 per page.
+  The structural MARK cell is shown exactly as printed, including ranges
+  (`P102-106`), suffixes (`B9215(RHS)`, `CB15050 (L)`) and section-style marks
+  on small fabricated parts (`RHS-150X50X3.0_BP`). These are still drawings
+  and are counted like any other.
   A page no strategy identifies still works: it's labelled `Page N` with a
-  quantity of 1.
+  quantity of 1. A page with **no text layer at all** (scanned or flattened)
+  gets the same, plus a hint to tap + when complete; the parser harness
+  reports these as expected rather than as failures.
 - Nothing is keyed off the filename beyond cut list vs drawings, so a file like
   `Combined Structural.pdf` is handled page by page like any other.
 
