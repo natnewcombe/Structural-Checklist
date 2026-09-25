@@ -108,6 +108,11 @@ Uses pdf.js 3.11.174 (loaded from cdnjs) to read the text layer, and pdf-lib
   3. `strategyFramecadDetailer` — FRAMECAD Detailer welded LGS panels: the mark
      sits in the title-block column directly above the `DRAWING NAME` label,
      with the office phone number (`02 4860 1400`) as a fallback anchor.
+  4. `strategyTitleBlockBelow` — Austruss LGS title block, where the mark sits
+     directly **below** the `DRAWING NAME` label. Covers welded LGS panels and
+     girder pages without a `Quantity Required` line. Those girder pages say
+     `DOUBLE GIRDER — 2× GI1000`, but each page is one truss of the pair, so
+     quantity is 1 per page.
   A page no strategy identifies still works: it's labelled `Page N` with a
   quantity of 1.
 - Nothing is keyed off the filename beyond cut list vs drawings, so a file like
