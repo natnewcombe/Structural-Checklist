@@ -1235,13 +1235,16 @@ function rawPointForViewport(items, it){ return { rawX: it.rawX, rawY: it.rawY }
 //     "Quantity Required" line, qty 1.
 const DRAWING_NUMBER_TOKEN_RE = /^[A-Z]{1,6}\d{2,6}$/;
 // The structural MARK cell can also carry a range (P102-106, qty 5) or a
-// handed/section suffix (B9215(RHS), CB15050 (L)). Shown exactly as printed.
-const STRUCTURAL_MARK_RE = /^[A-Z]{1,6}\d{2,6}(-\d{2,6}|\s*\([A-Z]{1,4}\))?$/;
+// handed/section suffix (B9215(RHS), CB15050 (L)). Small fabricated parts are
+// marked by their section instead (RHS-150X50X3.0_BP, a base plate). Shown
+// exactly as printed.
+const STRUCTURAL_MARK_RE = /^([A-Z]{1,6}\d{2,6}(-\d{2,6}|\s*\([A-Z]{1,4}\))?|[A-Z]{2,4}-\d+(X[\d.]+){1,2}(_[A-Z0-9]+)?)$/;
 
 function strategyStructuralTable(items){
   const markHdr = items.find(i => i.s === 'MARK');
   if(!markHdr) return null;
-  const row = items.filter(i => i.y > markHdr.y + 5 && i.y < markHdr.y + 30 && i.x < markHdr.x + 400)
+  // 500pt, not 400: a long section-style mark pushes WEIGHT(kg) out to ~410pt.
+  const row = items.filter(i => i.y > markHdr.y + 5 && i.y < markHdr.y + 30 && i.x < markHdr.x + 500)
                    .sort((a,b) => a.x - b.x);
   if(!row.length || !STRUCTURAL_MARK_RE.test(row[0].s.toUpperCase())) return null;
   const nums = row.slice(1).map(i => parseFloat(i.s)).filter(n => !isNaN(n));

@@ -119,7 +119,9 @@ Uses pdf.js 3.11.174 (loaded from cdnjs) to read the text layer, and pdf-lib
   5. `strategyMarkAs` — FRAMECAD Structure beams and wall panels that say
      `Mark as B101` with no `Quantity Required`; quantity 1 per page.
   The structural MARK cell is shown exactly as printed, including ranges
-  (`P102-106`) and suffixes (`B9215(RHS)`, `CB15050 (L)`).
+  (`P102-106`), suffixes (`B9215(RHS)`, `CB15050 (L)`) and section-style marks
+  on small fabricated parts (`RHS-150X50X3.0_BP`). These are still drawings
+  and are counted like any other.
   A page no strategy identifies still works: it's labelled `Page N` with a
   quantity of 1. A page with **no text layer at all** (scanned or flattened)
   gets the same, plus a hint to tap + when complete; the parser harness
