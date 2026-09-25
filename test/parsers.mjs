@@ -110,8 +110,12 @@ async function checkDrawings(file){
     kg: p.weightKg, unitKg: p.unitWeightKg, template: p.template,
     note: p.note, tags: (p.tags || []).join(', ')
   })));
-  const unidentified = pages.filter(p => !p.mark);
-  console.log('  ' + pages.length + ' pages, ' + (pages.length - unidentified.length) + ' identified');
+  // A page with no text layer (scanned or flattened) can't be identified by
+  // any strategy; the app shows it with qty 1 and a hint instead.
+  const noText = pages.filter(p => p.noText);
+  const unidentified = pages.filter(p => !p.mark && !p.noText);
+  console.log('  ' + pages.length + ' pages, ' + (pages.length - unidentified.length - noText.length) + ' identified' +
+              (noText.length ? ', ' + noText.length + ' with no text layer (expected: shown as-is, qty 1)' : ''));
   if(unidentified.length){
     fail(unidentified.length + ' page(s) with no mark: ' + unidentified.map(p => p.page).join(', ') +
          ' (they still work, but show as "Page N" instead of the mark)');
@@ -150,6 +154,12 @@ if(!files.length){
 // opens as drawings on the tablet is tested as drawings here.
 for(const f of files){
   const full = path.join(SAMPLES, f);
+  // Files the app hides from the list (e.g. Detailer reports) stay in
+  // samples/ but aren't parsed, since no operator ever opens them.
+  if(!api.classifyAttachments([{ name: f }]).length){
+    console.log('\n=== ' + f + '  [hidden in app, skipped]');
+    continue;
+  }
   const kind = api.CONFIG.CUTLIST_NAME_RE.test(f) ? 'cutlist' : 'drawings';
   console.log('\n=== ' + f + '  [' + kind + ']');
   try{

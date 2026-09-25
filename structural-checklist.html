@@ -829,14 +829,16 @@ const CONFIG = {
   REPORT_ID: '4428779186245508',
   WORK_ORDER_SHEET_ID: '8417646009601924',
   UPLOAD_CAP_BYTES: 30 * 1024 * 1024,
-  // Auto-generated attachments the bay never works from.
-  EXCLUDED_ATTACHMENT_RE: /^(Cover Page|Pack Label|Mapping)/i,
+  // Auto-generated attachments the bay never works from. Detailer reports are
+  // weight summaries; the guys check off from the drawings instead.
+  EXCLUDED_ATTACHMENT_RE: /^(Cover Page|Pack Label|Mapping)|DETAILER[\s_\-]*REPORT/i,
   IN_PROGRESS_ATTACHMENT_RE: /^IN PROGRESS[: ]/i,
   // Any PDF whose name matches opens as a tappable list; everything else
   // opens as drawings with a per-page counter.
   // Separator-tolerant: Smartsheet shows "ZONE A3 - CUT LENGTHS" but a
   // downloaded copy can arrive as "ZONE_A3_-_CUT_LENGTHS.pdf".
-  CUTLIST_NAME_RE: /CUT[\s_\-]*LENGTHS?/i,
+  // Structural job info files are cut length sheets under another name.
+  CUTLIST_NAME_RE: /CUT[\s_\-]*LENGTHS?|JOB[\s_\-]*INFO[\s_\-]*FILE/i,
   // Marks look like C1000, B1002, GI903, BE3000, NF3014. Yard list cut sheets
   // write them with a slash (m/301), so one is allowed after the prefix.
   MARK_RE: /^[A-Z]{1,6}\/?\d{2,6}[A-Z]?$/
@@ -1229,14 +1231,19 @@ function rawPointForViewport(items, it){ return { rawX: it.rawX, rawY: it.rawY }
 //     before the office phone number in the text stream.
 //  4. Austruss LGS title block: the mark sits directly below the DRAWING NAME
 //     label (welded LGS panels, 75 girders without "Quantity Required").
+//  5. FRAMECAD Structure beams / wall panels: "Mark as B101" with no
+//     "Quantity Required" line, qty 1.
 const DRAWING_NUMBER_TOKEN_RE = /^[A-Z]{1,6}\d{2,6}$/;
+// The structural MARK cell can also carry a range (P102-106, qty 5) or a
+// handed/section suffix (B9215(RHS), CB15050 (L)). Shown exactly as printed.
+const STRUCTURAL_MARK_RE = /^[A-Z]{1,6}\d{2,6}(-\d{2,6}|\s*\([A-Z]{1,4}\))?$/;
 
 function strategyStructuralTable(items){
   const markHdr = items.find(i => i.s === 'MARK');
   if(!markHdr) return null;
   const row = items.filter(i => i.y > markHdr.y + 5 && i.y < markHdr.y + 30 && i.x < markHdr.x + 400)
                    .sort((a,b) => a.x - b.x);
-  if(!row.length || !DRAWING_NUMBER_TOKEN_RE.test(row[0].s.toUpperCase())) return null;
+  if(!row.length || !STRUCTURAL_MARK_RE.test(row[0].s.toUpperCase())) return null;
   const nums = row.slice(1).map(i => parseFloat(i.s)).filter(n => !isNaN(n));
   // UNIT WEIGHT (kg) sits in the parts table lower down; grab the number
   // immediately under that label when present.
@@ -1323,6 +1330,22 @@ function strategyTitleBlockBelow(items){
   return { mark: cands[0].s.toUpperCase(), qty: 1, lengthMm: null, weightKg: weight, unitWeightKg: weight, template: 'titleblock' };
 }
 
+// FRAMECAD Structure pages (beams, wall panels) that say "Mark as B101" with
+// no "Quantity Required" in front of it: one item per page.
+function strategyMarkAs(items, text){
+  const m = text.match(/\bMark as\s+([A-Z]{1,6}\d{2,6}[A-Z]?)\b/i);
+  if(!m) return null;
+  // The weight value isn't next to its label in the text stream, so find it
+  // by position: the nearest "23kg" on the same line to the right.
+  let weight = null;
+  const lbl = items.find(i => /^Assembly Weight$/i.test(i.s));
+  if(lbl){
+    const val = items.filter(i => Math.abs(i.y - lbl.y) < 4 && i.x > lbl.x && /^[\d.]+\s*kg$/i.test(i.s)).sort((a,b) => a.x - b.x)[0];
+    if(val) weight = parseFloat(val.s);
+  }
+  return { mark: m[1].toUpperCase(), qty: 1, lengthMm: null, weightKg: weight, unitWeightKg: weight, template: 'markas' };
+}
+
 // Fabrication callouts. Same vocabulary as the LGS app plus the structural
 // ones seen so far; extend here rather than replacing.
 function extractTags(text){
@@ -1351,8 +1374,12 @@ async function buildDrawingIndex(pdfDoc){
       const { items } = await getPageItems(page);
       const text = items.map(i => i.s).join(' ');
       const tokens = text.split(/\s+/).filter(Boolean);
-      const id = strategyStructuralTable(items) || strategyGirder(text) || strategyFramecadDetailer(items, tokens) || strategyTitleBlockBelow(items);
+      const id = strategyStructuralTable(items) || strategyGirder(text) || strategyFramecadDetailer(items, tokens) || strategyTitleBlockBelow(items) || strategyMarkAs(items, text);
       if(id) Object.assign(entry, id);
+      // Scanned or flattened sheets have no text layer at all, so nothing can
+      // be read from them. The page still shows with qty 1; say why, so the
+      // operator knows to just mark it complete.
+      if(!items.length){ entry.noText = true; entry.note = 'Can’t read this sheet — tap + when complete'; }
       entry.tags = extractTags(text);
     }catch(e){ /* leave the page unidentified rather than fail the scan */ }
     const base = entry.mark || ('PAGE ' + p);

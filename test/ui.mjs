@@ -100,12 +100,15 @@ const kinds = w.eval(`JSON.stringify(classifyAttachments([
   {name:'Cover Page_W-14132_x.pdf'}, {name:'Pack Label_W-14132.pdf'},
   {name:'Mapping for Work Order Weld Label.pdf'}, {name:'IN PROGRESS: x.pdf'},
   {name:'25363 ZONE A3 - CUT LENGTHS.pdf'}, {name:'25363_ZONE_A3_-_CUT_LENGTHS.pdf'},
-  {name:'Combined Structural.pdf'}, {name:'notes.dxf'}
+  {name:'Combined Structural.pdf'}, {name:'notes.dxf'},
+  {name:'25415-LGS-1-600 [A] BUILDING 1 - Detailer - Report - Girders.pdf'},
+  {name:'22095-LGS-B1-040 (A) Unit 181 - Job Info File - Structural.pdf'}
 ]).map(a => a.name + '=' + a.kind))`);
-check('excludes generated files, routes by name', JSON.parse(kinds), [
+check('excludes generated files and detailer reports, routes by name', JSON.parse(kinds), [
   '25363 ZONE A3 - CUT LENGTHS.pdf=cutlist',
   '25363_ZONE_A3_-_CUT_LENGTHS.pdf=cutlist',
-  'Combined Structural.pdf=drawings'
+  'Combined Structural.pdf=drawings',
+  '22095-LGS-B1-040 (A) Unit 181 - Job Info File - Structural.pdf=cutlist'
 ]);
 
 /* ---------------------------------------------------------- cut list screen */
